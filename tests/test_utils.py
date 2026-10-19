@@ -12,8 +12,10 @@ from pymc.distributions.shape_utils import change_dist_size
 from scipy import integrate, special, stats
 
 from bambi.utils import listify
+from bambi.defaults import get_builtin_family
 from bambi.backend.pymc.links import cloglog, probit
 from bambi.backend.pymc.data import shape_common_data
+from bambi.backend.pymc.transform import transforms_registry
 from bambi.backend.pymc.utils import (
     CureWeibull,
     LogLogistic,
@@ -298,6 +300,79 @@ def test_bounded_beta_gradients_at_boundaries(distribution, value):
     # (c0, c1) for OrderedBeta and (zoi, coi) for ZeroOneInflatedBeta
     params = (0.4, 6.0, -1.0, 1.0) if distribution is OrderedBeta else (0.4, 6.0, 0.3, 0.6)
     assert np.isfinite(evaluate(*params)).all()
+
+
+def mean_from_logp(dist, upper=np.inf):
+    """Compute the mean of a distribution on [0, upper] by integrating its density."""
+    if dist.dtype.startswith("int"):
+        values = np.arange(1000)
+        return np.sum(values * np.exp(pm.logp(dist, values).eval()))
+
+    value = pt.scalar("value")
+    logp = pytensor.function([value], pm.logp(dist, value))
+    interior, _ = integrate.quad(lambda x: x * np.exp(logp(x)), 0, upper)
+    # A point mass at zero adds nothing to the mean, but one at a finite upper bound does.
+    if np.isfinite(upper):
+        interior += upper * np.exp(logp(upper))
+    return interior
+
+
+@pytest.mark.parametrize(
+    "family, parameters, make_dist, upper",
+    [
+        ("hurdle_poisson", {"mu": 2.5, "psi": 0.7}, pm.HurdlePoisson.dist, np.inf),
+        (
+            "hurdle_negativebinomial",
+            {"mu": 3.0, "alpha": 1.5, "psi": 0.6},
+            pm.HurdleNegativeBinomial.dist,
+            np.inf,
+        ),
+        ("hurdle_gamma", {"mu": 2.0, "sigma": 1.2, "psi": 0.4}, pm.HurdleGamma.dist, np.inf),
+        (
+            "hurdle_lognormal",
+            {"mu": 0.3, "sigma": 0.5, "psi": 0.8},
+            pm.HurdleLogNormal.dist,
+            np.inf,
+        ),
+        (
+            "ordered_beta",
+            {"mu": 0.6, "kappa": 8.0, "c0": -2.0, "c1": 1.5},
+            OrderedBeta.dist,
+            1.0,
+        ),
+        (
+            "zero_one_inflated_beta",
+            {"mu": 0.6, "kappa": 8.0, "zoi": 0.25, "coi": 0.3},
+            ZeroOneInflatedBeta.dist,
+            1.0,
+        ),
+    ],
+)
+def test_response_mean(family, parameters, make_dist, upper):
+    # The registered mean receives the arguments of the response distribution.
+    response_mean = transforms_registry.get_response_mean(get_builtin_family(family))
+    parameters = {name: pt.as_tensor(value) for name, value in parameters.items()}
+    expected = mean_from_logp(make_dist(**parameters), upper)
+    np.testing.assert_allclose(response_mean(parameters).eval(), expected, rtol=1e-6)
+
+
+def test_response_mean_broadcasts_parameters():
+    response_mean = transforms_registry.get_response_mean(get_builtin_family("hurdle_poisson"))
+    mu = np.array([0.5, 2.0, 8.0])
+    actual = response_mean({"mu": pt.as_tensor(mu), "psi": pt.as_tensor(0.3)}).eval()
+    np.testing.assert_allclose(actual, 0.3 * mu / (1 - np.exp(-mu)))
+
+
+@pytest.mark.parametrize("alpha", [0.3, 0.8, 1.0, 1.5])
+def test_loglogistic_response_mean(alpha):
+    # The mean is only finite when alpha < 1.
+    mu = 0.7
+    response_mean = transforms_registry.get_response_mean(get_builtin_family("loglogistic"))
+    actual = response_mean({"mu": pt.as_tensor(mu), "alpha": pt.as_tensor(alpha)}).eval()
+    if alpha < 1:
+        np.testing.assert_allclose(actual, stats.fisk(c=1 / alpha, scale=np.exp(mu)).mean())
+    else:
+        assert np.isposinf(actual)
 
 
 def test_censored():

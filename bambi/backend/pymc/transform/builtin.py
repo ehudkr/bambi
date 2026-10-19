@@ -15,15 +15,21 @@ from bambi.families.builtin import (
     CureGamma,
     CureWeibullPH,
     CureWeibull,
+    ExGaussian,
     Exponential,
     Gamma,
     HurdleGamma,
+    HurdleLogNormal,
+    HurdleNegativeBinomial,
+    HurdlePoisson,
+    LogLogistic,
     Multinomial,
     OrderedBeta,
     OrderedStereotype,
     StoppingRatio,
     Weibull,
     WeibullPH,
+    ZeroOneInflatedBeta,
 )
 
 
@@ -150,6 +156,12 @@ def _(parameters):
     return {"p": parameters["p"]}
 
 
+@transforms_registry.response_mean(ExGaussian)
+def _(parameters):
+    # PyMC 6.3 returns mu + sigma, because its mean takes the parameters in the wrong order.
+    return parameters["mu"] + parameters["nu"]
+
+
 @transforms_registry.transform_parameters(Exponential)
 def _(parameters):
     return {"lam": 1 / parameters["mu"]}
@@ -172,6 +184,39 @@ def _(parameters):
     }
 
 
+@transforms_registry.response_mean(HurdleGamma)
+def _(parameters):
+    return parameters["psi"] * parameters["mu"]
+
+
+@transforms_registry.response_mean(HurdleLogNormal)
+def _(parameters):
+    return parameters["psi"] * pt.exp(parameters["mu"] + parameters["sigma"] ** 2 / 2)
+
+
+@transforms_registry.response_mean(HurdleNegativeBinomial)
+def _(parameters):
+    # Non-zero values follow a zero-truncated negative binomial.
+    # Before truncation, P(Y = 0) = (alpha / (alpha + mu)) ** alpha.
+    mu, alpha = parameters["mu"], parameters["alpha"]
+    return parameters["psi"] * mu / -pt.expm1(-alpha * pt.log1p(mu / alpha))
+
+
+@transforms_registry.response_mean(HurdlePoisson)
+def _(parameters):
+    # Non-zero values follow a zero-truncated Poisson.
+    # Before truncation, P(Y = 0) = exp(-mu).
+    mu = parameters["mu"]
+    return parameters["psi"] * mu / -pt.expm1(-mu)
+
+
+@transforms_registry.response_mean(LogLogistic)
+def _(parameters):
+    # The mean is exp(mu) * pi * alpha / sin(pi * alpha), and it is only finite if alpha < 1.
+    mu, alpha = parameters["mu"], parameters["alpha"]
+    return pt.switch(alpha < 1, pt.exp(mu) * np.pi * alpha / pt.sin(np.pi * alpha), np.inf)
+
+
 @transforms_registry.transform_predictor(Multinomial, "p")
 def _(predictor, _parameters, inverse_link):
     if predictor.ndim == 1:
@@ -191,6 +236,15 @@ def _(parameters):
         "c0": cut0,
         "c1": cut0 + pt.exp(parameters["logdelta"]),
     }
+
+
+@transforms_registry.response_mean(OrderedBeta)
+def _(parameters):
+    # E[Y] = P(Y = 1) + P(0 < Y < 1) * mu, because the interior beta has mean mu.
+    # With P(Y > 0) = sigmoid(eta - c0) and P(Y = 1) = sigmoid(eta - c1), that is:
+    mu = parameters["mu"]
+    eta = pt.log(mu) - pt.log1p(-mu)
+    return mu * pt.sigmoid(eta - parameters["c0"]) + (1 - mu) * pt.sigmoid(eta - parameters["c1"])
 
 
 @transforms_registry.transform_predictor(OrderedStereotype, "p")
@@ -275,6 +329,13 @@ def _(parameters):
     # but we want S(t) = exp(-lam * t**alpha).
     # So we have beta^(-alpha) = lam, or beta = lam^(-1 / alpha).
     return {"alpha": alpha, "beta": parameters["lam"] ** (-1 / alpha)}
+
+
+@transforms_registry.response_mean(ZeroOneInflatedBeta)
+def _(parameters):
+    # E[Y] = P(Y = 1) + P(0 < Y < 1) * mu, because the interior beta has mean mu.
+    zoi = parameters["zoi"]
+    return zoi * parameters["coi"] + (1 - zoi) * parameters["mu"]
 
 
 @transforms_registry.transform_parameters(CureWeibull)
