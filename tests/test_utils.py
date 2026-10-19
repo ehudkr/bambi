@@ -15,6 +15,7 @@ from bambi.utils import listify
 from bambi.defaults import get_builtin_family
 from bambi.backend.pymc.links import cloglog, probit
 from bambi.backend.pymc.data import shape_common_data
+from bambi.backend.pymc.terms.response import compute_response_mean
 from bambi.backend.pymc.transform import transforms_registry
 from bambi.backend.pymc.utils import (
     CureWeibull,
@@ -354,6 +355,73 @@ def test_response_mean(family, parameters, make_dist, upper):
     parameters = {name: pt.as_tensor(value) for name, value in parameters.items()}
     expected = mean_from_logp(make_dist(**parameters), upper)
     np.testing.assert_allclose(response_mean(parameters).eval(), expected, rtol=1e-6)
+
+
+@pytest.mark.parametrize(
+    "family, parameters, n, expected",
+    [
+        ("gaussian", {"mu": 1.5, "sigma": 2.0}, None, 1.5),
+        ("t", {"mu": 1.5, "sigma": 2.0, "nu": 4.0}, None, 1.5),
+        ("laplace", {"mu": 1.5, "b": 2.0}, None, 1.5),
+        (
+            "asymmetriclaplace",
+            {"mu": 1.5, "b": 2.0, "kappa": 0.5},
+            None,
+            # 'b' is a rate in PyMC and the inverse of the scale in SciPy.
+            stats.laplace_asymmetric(kappa=0.5, loc=1.5, scale=1 / 2.0).mean(),
+        ),
+        (
+            "exgaussian",
+            {"mu": 1.5, "sigma": 0.5, "nu": 2.0},
+            None,
+            stats.exponnorm(K=2.0 / 0.5, loc=1.5, scale=0.5).mean(),
+        ),
+        ("gamma", {"mu": 1.5, "alpha": 3.0}, None, 1.5),
+        ("exponential", {"mu": 1.5}, None, 1.5),
+        ("weibull", {"mu": 1.5, "alpha": 2.0}, None, 1.5),
+        (
+            "weibull_ph",
+            {"lam": 0.5, "alpha": 2.0},
+            None,
+            stats.weibull_min(c=2.0, scale=0.5 ** (-1 / 2.0)).mean(),
+        ),
+        (
+            "lognormal",
+            {"mu": 0.3, "sigma": 0.5},
+            None,
+            stats.lognorm(s=0.5, scale=np.exp(0.3)).mean(),
+        ),
+        ("wald", {"mu": 1.5, "lam": 2.0}, None, 1.5),
+        ("beta", {"mu": 0.3, "kappa": 5.0}, None, 0.3),
+        ("bernoulli", {"p": 0.3}, None, 0.3),
+        ("binomial", {"p": 0.3}, 10, 3.0),
+        ("beta_binomial", {"mu": 0.3, "kappa": 5.0}, 10, 3.0),
+        ("poisson", {"mu": 1.5}, None, 1.5),
+        ("negativebinomial", {"mu": 1.5, "alpha": 2.0}, None, 1.5),
+        ("zero_inflated_poisson", {"mu": 1.5, "psi": 0.6}, None, 0.9),
+        ("zero_inflated_negativebinomial", {"mu": 1.5, "alpha": 2.0, "psi": 0.6}, None, 0.9),
+        ("zero_inflated_binomial", {"p": 0.3, "psi": 0.6}, 10, 1.8),
+        ("multinomial", {"p": np.array([0.2, 0.3, 0.5])}, 10, [2.0, 3.0, 5.0]),
+        ("dirichlet_multinomial", {"a": np.array([1.0, 2.0, 5.0])}, 16, [2.0, 4.0, 10.0]),
+    ],
+)
+def test_response_mean_builtin_families(family, parameters, n, expected):
+    # Most families use the mean that PyMC computes for the response distribution.
+    parameters = {name: pt.as_tensor(value) for name, value in parameters.items()}
+    response_mean = compute_response_mean(get_builtin_family(family), parameters, n)
+    np.testing.assert_allclose(response_mean.eval(), expected)
+
+
+@pytest.mark.parametrize(
+    "family, parameters",
+    [
+        ("categorical", {"p": np.array([0.2, 0.3, 0.5])}),
+        ("cure_weibull", {"mu": 1.5, "alpha": 2.0, "cure": 0.3}),
+    ],
+)
+def test_response_mean_not_available(family, parameters):
+    parameters = {name: pt.as_tensor(value) for name, value in parameters.items()}
+    assert compute_response_mean(get_builtin_family(family), parameters) is None
 
 
 def test_response_mean_broadcasts_parameters():

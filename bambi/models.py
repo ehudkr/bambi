@@ -984,10 +984,17 @@ class Model:
             The `DataTree` instance returned by `.fit()`.
         kind : str, optional
             Indicates the type of prediction required. Can be `"response_params"`,
-            `"response"`, `"response_conditional"`, or `"time_and_cause"`.
+            `"response_mean"`, `"response"`, `"response_conditional"`, or `"time_and_cause"`.
 
             * `"response_params"` returns draws from the posterior distribution of the
               likelihood parameters.
+            * `"response_mean"` returns draws from the posterior distribution of the mean of
+              the response, E[Y]. Like `"response"`, it ignores censoring or truncation of the
+              observed response. For most families, the mean is the parent parameter (e.g.
+              `"mu"`), but it isn't for families such as the hurdle and zero-inflated families.
+              It is not available when the mean of the response distribution is undefined or
+              unknown, such as for categorical, ordinal, cure, constrained, and competing-risks
+              responses.
             * `"response"` returns draws from the posterior predictive response distribution.
               It is available for every response type and ignores censoring or truncation of the
               observed response. For competing-risks responses, it draws the first-event time.
@@ -1009,6 +1016,8 @@ class Model:
             with the name of the parent parameter, e.g. `"mu"` and `"sigma"` for a Gaussian
             likelihood, or `"p"` for a Bernoulli likelihood, is added to the `posterior` group
             for in-sample predictions or to `predictions` for out-of-sample data. With
+            `kind="response_mean"`, the parameters and a variable named `<response>_mean` are
+            added to the same groups. With
             `kind="response"`, the draws are added to `posterior_predictive` in sample or to
             `predictions` out of sample. The same applies to
             `kind="response_conditional"`. With `kind="time_and_cause"`, the
@@ -1043,13 +1052,21 @@ class Model:
 
         if kind not in (
             "response_params",
+            "response_mean",
             "response",
             "response_conditional",
             "time_and_cause",
         ):
             raise ValueError(
-                "'kind' must be one of 'response_params', 'response', 'response_conditional', "
-                "or 'time_and_cause'"
+                "'kind' must be one of 'response_params', 'response_mean', 'response', "
+                "'response_conditional', or 'time_and_cause'"
+            )
+
+        if kind == "response_mean" and not self.has_response_mean():
+            raise ValueError(
+                f"'kind=response_mean' is not available for this model ({self.family.name} "
+                "family). The mean of the response is undefined or unknown for this family "
+                "or response."
             )
 
         if kind == "time_and_cause" and not self.response_term.is_competing_risks:
@@ -1074,6 +1091,21 @@ class Model:
             inplace=inplace,
             progressbar=progressbar,
         )
+
+    def has_response_mean(self):
+        """Whether the mean of the response, E[Y], can be computed for this model
+
+        If it can, `predict(kind="response_mean")` computes it. It can't when the mean of the
+        response distribution is undefined or unknown, such as for categorical, ordinal, cure,
+        constrained, and competing-risks responses.
+
+        Returns
+        -------
+        bool
+        """
+        if not self.built:
+            self.build()
+        return self.backend.has_response_mean()
 
     def compute_log_likelihood(self, idata, data=None, inplace=True, progressbar=False):
         """Compute the model's log-likelihood

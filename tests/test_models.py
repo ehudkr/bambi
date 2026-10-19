@@ -1863,6 +1863,166 @@ def test_predict_constant_parameter(out_of_sample, mock_pymc_sample):
     assert "sigma" not in result.posterior
 
 
+@pytest.fixture(scope="module")
+def response_mean_data():
+    rng = np.random.default_rng(1234)
+    n = 50
+    x = rng.uniform(-1, 1, n)
+    mu = np.exp(0.5 + 0.3 * x)
+    is_positive = rng.uniform(size=n) < 1 / (1 + np.exp(3 * x))
+    y = rng.poisson(mu) + 1
+    trials = rng.integers(5, 10, size=n)
+    return pd.DataFrame(
+        {
+            "x": x,
+            "y": np.where(is_positive, y, 0),
+            "z": rng.normal(size=n),
+            "g": rng.choice(list("abc"), size=n),
+            "n": trials,
+            "s": rng.binomial(trials, 0.4),
+            "status": rng.choice(["left", "none", "right"], size=n),
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "formula, family",
+    [
+        (bmb.Formula("y ~ x", "psi ~ x"), "hurdle_poisson"),
+        (bmb.Formula("y ~ x", "psi ~ x"), "zero_inflated_poisson"),
+        ("z ~ x + (1 | g)", "gaussian"),
+        ("p(s, n) ~ x", "binomial"),
+    ],
+)
+def test_predict_response_mean(response_mean_data, formula, family, mock_pymc_sample):
+    model = bmb.Model(formula, response_mean_data, family=family)
+    idata = model.fit(chains=2, draws=20)
+    response_name = model.response_term.label
+    mean_name = f"{response_name}_mean"
+
+    # In sample, the mean is added to the posterior with the parameters, and nothing is sampled.
+    model.predict(idata, kind="response_mean")
+    assert idata.posterior[mean_name].shape == (2, 20, len(response_mean_data))
+    assert "mu" in idata.posterior or "p" in idata.posterior
+    assert "posterior_predictive" not in idata
+
+    # Out of sample, it's added to the predictions.
+    new_data = response_mean_data.head(5)
+    result = model.predict(idata, kind="response_mean", data=new_data, inplace=False)
+    assert result.predictions[mean_name].shape == (2, 20, 5)
+
+
+def test_predict_response_mean_values(response_mean_data, mock_pymc_sample):
+    formula = bmb.Formula("y ~ x", "psi ~ x")
+    model = bmb.Model(formula, response_mean_data, family="hurdle_poisson")
+    idata = model.fit(chains=2, draws=20)
+    model.predict(idata, kind="response_mean")
+    mu, psi = idata.posterior["mu"], idata.posterior["psi"]
+    np.testing.assert_allclose(idata.posterior["y_mean"], psi * mu / (1 - np.exp(-mu)))
+
+    # Group-specific effects can be dropped, as with the other kinds.
+    model = bmb.Model("z ~ x + (1 | g)", response_mean_data)
+    idata = model.fit(chains=2, draws=20)
+    result = model.predict(idata, kind="response_mean", include_group_specific=False, inplace=False)
+    posterior = result.posterior
+    expected = posterior["Intercept"] + posterior["x"] * xr.DataArray(
+        model.data["x"], dims="__obs__"
+    )
+    xr.testing.assert_allclose(posterior["z_mean"], expected.transpose(*posterior["z_mean"].dims))
+
+
+def test_predict_response_mean_binomial_trials(response_mean_data, mock_pymc_sample):
+    model = bmb.Model("p(s, n) ~ x", response_mean_data, family="binomial")
+    idata = model.fit(chains=2, draws=20)
+    model.predict(idata, kind="response_mean")
+    trials = response_mean_data["n"].to_numpy()
+    np.testing.assert_allclose(idata.posterior["s_mean"], trials * idata.posterior["p"])
+
+    # Trials default to one if they are not passed.
+    new_data = response_mean_data[["x"]].head(3)
+    with pytest.warns(UserWarning, match="Using n=1"):
+        result = model.predict(idata, kind="response_mean", data=new_data, inplace=False)
+    np.testing.assert_allclose(result.predictions["s_mean"], result.predictions["p"])
+
+    new_data = response_mean_data[["x", "n"]].head(3)
+    result = model.predict(idata, kind="response_mean", data=new_data, inplace=False)
+    trials = new_data["n"].to_numpy()
+    np.testing.assert_allclose(result.predictions["s_mean"], trials * result.predictions["p"])
+
+
+def test_predict_response_mean_counts(mock_pymc_sample):
+    data = pd.DataFrame({"x": [0.0, 1.0, 2.0], "y1": [1, 4, 0], "y2": [3, 0, 5], "y3": [2, 1, 1]})
+    model = bmb.Model("counts(y1, y2, y3) ~ x", data, family="multinomial")
+    idata = model.fit(chains=2, draws=20)
+    model.predict(idata, kind="response_mean")
+    totals = data[["y1", "y2", "y3"]].sum(axis=1).to_numpy()[:, np.newaxis]
+    np.testing.assert_allclose(idata.posterior["y1_y2_y3_mean"], totals * idata.posterior["p"])
+
+
+def test_predict_response_mean_with_alias(response_mean_data, mock_pymc_sample):
+    model = bmb.Model(bmb.Formula("y ~ x", "psi ~ x"), response_mean_data, family="hurdle_poisson")
+    model.set_alias({"y": "count", "psi": {"psi": "nonzero"}})
+    idata = model.fit(chains=2, draws=20)
+    model.predict(idata, kind="response_mean")
+    mu, psi = idata.posterior["mu"], idata.posterior["nonzero"]
+    np.testing.assert_allclose(idata.posterior["count_mean"], psi * mu / (1 - np.exp(-mu)))
+
+
+@pytest.mark.parametrize(
+    "formula",
+    ["censored(z, status) ~ x", "truncated(z, lb=-5) ~ x"],
+    ids=["censored", "truncated"],
+)
+def test_predict_response_mean_ignores_censoring_and_truncation(
+    response_mean_data, formula, mock_pymc_sample
+):
+    # Like kind="response", the response mean is the one of the underlying distribution.
+    data = response_mean_data.assign(z=response_mean_data["z"].clip(-4, 4))
+    priors = {
+        "Intercept": bmb.Prior("Normal", mu=0, sigma=1),
+        "x": bmb.Prior("Normal", mu=0, sigma=1),
+        "sigma": bmb.Prior("HalfNormal", sigma=1),
+    }
+    model = bmb.Model(formula, data, priors=priors)
+    idata = model.fit(chains=2, draws=20)
+    model.predict(idata, kind="response_mean")
+    assert np.isfinite(idata.posterior["z_mean"]).all()
+    np.testing.assert_allclose(idata.posterior["z_mean"], idata.posterior["mu"])
+
+    result = model.predict(idata, kind="response_mean", data=data[["x"]].head(3), inplace=False)
+    assert np.isfinite(result.predictions["z_mean"]).all()
+    np.testing.assert_allclose(result.predictions["z_mean"], result.predictions["mu"])
+
+
+@pytest.mark.parametrize(
+    "formula, family",
+    [
+        ("g ~ x", "categorical"),
+        ("g ~ x", "cumulative"),
+        ("constrained(z, lb=-5) ~ x", "gaussian"),
+        ("z ~ x", "cure_weibull"),
+    ],
+)
+def test_predict_response_mean_not_available(response_mean_data, formula, family):
+    data = response_mean_data.assign(z=np.exp(response_mean_data["z"]))
+    model = bmb.Model(formula, data, family=family)
+    assert not model.has_response_mean()
+    with pytest.raises(ValueError, match="'kind=response_mean' is not available"):
+        model.predict(None, kind="response_mean")
+
+
+def test_predict_response_mean_not_available_competing_risks():
+    data = pd.DataFrame(
+        {
+            "time": [1.0, 2.0, 3.0, 4.0],
+            "status": ["right", "event", "event", "right"],
+            "cause": ["none", "cause_b", "cause_a", "none"],
+        }
+    )
+    model = bmb.Model("risks(time, status, cause) ~ 1", data, family="exponential")
+    assert not model.has_response_mean()
+
+
 def test_predict_include_group_specific(data_random_n100):
     model = bmb.Model("binary_num ~ 1 + (1|continuous1)", data_random_n100, family="bernoulli")
     model.build()

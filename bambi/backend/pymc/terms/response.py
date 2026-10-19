@@ -10,7 +10,9 @@ import pytensor.tensor as pt
 from formulae.terms.call_utils import CallVarsExtractor
 from formulae.terms.call_resolver import get_function_from_module
 from pymc.distributions.continuous import TruncatedNormalRV
+from pymc.distributions.moments import mean
 from pymc.distributions.truncated import TruncatedRV
+from pymc.exceptions import UndefinedMomentException
 from pymc.model.fgraph import fgraph_from_model, model_from_fgraph
 from pymc.pytensorf import toposort_replace
 
@@ -150,7 +152,8 @@ def replace_response_variables(
     term: ResponseTerm, model: pm.Model, kind: str | None = None
 ) -> pm.Model:
     """Apply response-variable replacements required by the current cloned data."""
-    if term.is_truncated and kind == "response":
+    # The response mean ignores the truncation too, so it doesn't need the bounds.
+    if term.is_truncated and kind in ("response", "response_mean"):
         return _untruncate_response(term.label, model)
 
     return model
@@ -181,13 +184,26 @@ def get_response_prediction_names(term: ResponseTerm, kind: str) -> list[str]:
     """Return the posterior-predictive variables associated with a response."""
     if term.is_competing_risks and kind == "time_and_cause":
         return [f"{term.label}_time", f"{term.label}_cause"]
+    if kind == "response_mean":
+        return [f"{term.label}_mean"]
     return [term.label]
 
 
 def build_response_prediction_variables(
-    term: ResponseTerm, model: pm.Model, family: Family, kind: str
+    term: ResponseTerm,
+    model: pm.Model,
+    family: Family,
+    kind: str,
+    labels: dict[str, str] | None = None,
 ) -> None:
-    """Add posterior-predictive variables that differ from the observed response."""
+    """Add posterior-predictive variables that differ from the observed response.
+
+    `labels` maps the names of the likelihood parameters to the names of their model variables.
+    """
+    if kind == "response_mean":
+        _build_response_mean(term, model, family, labels)
+        return
+
     if not term.is_competing_risks or kind != "time_and_cause":
         return
 
@@ -197,6 +213,90 @@ def build_response_prediction_variables(
     with model:
         pm.Deterministic(f"{term.label}_time", pt.min(latent_times, axis=-1), dims=obs_dims)
         pm.Deterministic(f"{term.label}_cause", pt.argmin(latent_times, axis=-1) + 1, dims=obs_dims)
+
+
+def _build_response_mean(
+    term: ResponseTerm, model: pm.Model, family: Family, labels: dict[str, str] | None
+) -> None:
+    """Add the mean of the response, as a function of the parameters, to the model."""
+    response_mean = get_response_mean(term, model, family, labels)
+    if response_mean is None:
+        raise ValueError(f"'kind=response_mean' is not available for the '{family.name}' family.")
+
+    dims = tuple(model.named_vars_to_dims[term.label])
+    response_mean = pt.broadcast_to(response_mean, tuple(model.dim_lengths[dim] for dim in dims))
+    with model:
+        pm.Deterministic(f"{term.label}_mean", response_mean, dims=dims)
+
+
+def get_response_mean(
+    term: ResponseTerm, model: pm.Model, family: Family, labels: dict[str, str] | None = None
+) -> pt.TensorVariable | None:
+    """Build the mean of the response as a function of the variables in `model`.
+
+    It uses the mean registered for the family, or the one PyMC computes for the response
+    distribution. It returns `None` when neither is available. Censoring and truncation
+    describe how the response was observed, so they do not change its mean.
+    """
+    if term.is_competing_risks or term.is_constrained:
+        return None
+
+    labels = labels or {}
+    parameters = {name: model[labels.get(name, name)] for name in family.likelihood.params}
+
+    # Binomial trials and multinomial totals are data inputs to the response distribution.
+    n = None
+    if term.is_binomial or term.is_counts:
+        n = _get_response_totals(term, model)
+
+    return compute_response_mean(family, parameters, n)
+
+
+def compute_response_mean(family: Family, parameters: dict, n=None) -> pt.TensorVariable | None:
+    """Compute the mean of the response distribution from the parameters of the family.
+
+    `n` is the number of trials, or the total count, of binomial and multinomial responses.
+    It returns `None` when the mean is not available.
+    """
+    transform_parameters = transforms_registry.get_parameter_transform(family)
+    if transform_parameters is not None:
+        parameters = transform_parameters(parameters)
+
+    if n is not None:
+        parameters = parameters | {"n": n}
+
+    response_mean = transforms_registry.get_response_mean(family)
+    if response_mean is not None:
+        return response_mean(parameters)
+
+    distribution = get_distribution_from_likelihood(family.likelihood)
+    try:
+        response_dist = distribution.dist(**parameters)
+    except (AttributeError, TypeError):
+        # Custom likelihoods may not have a `.dist` that takes the parameters of the family.
+        return None
+
+    try:
+        return mean(response_dist)
+    except (NotImplementedError, UndefinedMomentException):
+        return None
+
+
+def _get_response_totals(term: ResponseTerm, model: pm.Model):
+    """Get the binomial trials or the multinomial totals, as used by the response."""
+    if term.is_binomial:
+        call_args = _get_call_bound_arguments(term)
+        if call_args["trials"] == "":
+            return term.data[0, 1].item()
+        return model[call_args["trials"] + "_data"]
+
+    n_argument = term.components[0].call.kwargs.get("n")
+    n_name = getattr(n_argument, "name", None)
+    if n_argument is None:
+        return pt.sum(model[term.label + "_data"], axis=1)
+    if n_name is None:
+        return term.data.sum(axis=1)[0].item()
+    return model[n_name + "_data"]
 
 
 def build_new_response_data(
@@ -543,7 +643,7 @@ def _build_new_truncated_data(
                 "Use kind='response' for unconditional predictions."
             )
 
-    if purpose == "prediction" and kind == "response":
+    if purpose == "prediction" and kind in ("response", "response_mean"):
         return {value_name + "_data": np.full(n, term.data[0, 0])}
 
     # Re-evaluate the response call so transformed values and bounds stay consistent.
@@ -709,7 +809,7 @@ def _build_new_binomial_data(
 
     use_default_trials = (
         purpose == "prediction"
-        and kind == "response_params"
+        and kind in ("response_params", "response_mean")
         and trials_name
         and trials_name not in data.columns
     )
@@ -733,7 +833,7 @@ def _build_new_binomial_data(
         if use_default_trials:
             data_dict[trials_name] = np.ones(n, dtype=int)
             warnings.warn(
-                "Using n=1 for Binomial response-parameter predictions because the trials "
+                f"Using n=1 for Binomial '{kind}' predictions because the trials "
                 f"column '{trials_name}' was not provided. Pass '{trials_name}' explicitly "
                 "to predict for a different number of trials.",
                 UserWarning,

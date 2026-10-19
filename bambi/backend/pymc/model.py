@@ -36,6 +36,7 @@ from bambi.backend.pymc.terms.response import (
     build_new_response_data,
     build_response_prediction_variables,
     build_response_interventions,
+    get_response_mean,
     get_response_prediction_names,
     replace_response_variables,
 )
@@ -327,6 +328,20 @@ class PyMCModel:
 
         return idata
 
+    def has_response_mean(self) -> bool:
+        """Whether the mean of the response is available for this model.
+
+        It builds the graph of the mean, without adding it to the model or compiling it.
+        """
+        response_mean = get_response_mean(
+            self.spec.response_term, self.model, self.spec.family, self._get_parameter_labels()
+        )
+        return response_mean is not None
+
+    def _get_parameter_labels(self) -> dict[str, str]:
+        """Map the names of the likelihood parameters to the names of their model variables."""
+        return {name: parameter.label for name, parameter in self.spec.parameters.items()}
+
     def compute_log_likelihood(
         self,
         idata,
@@ -446,17 +461,26 @@ class PyMCModel:
         if not include_group_specific:
             model = remove_group_specific_contributions(self._group_specific_state, model)
 
+        # The response mean is a function of the parameters, so it's computed with them.
+        deterministics_names = parameters_names[:]
+        if kind == "response_mean":
+            model = pm.model.fgraph.clone_model(model)
+            build_response_prediction_variables(
+                self.spec.response_term, model, self.spec.family, kind, self._get_parameter_labels()
+            )
+            deterministics_names += responses_names
+
         # It's assumed the user always wants the parameter 'predictions' (mu, sigma, etc.)
         with _suppress_logging(), model:
             posterior_for_prediction = pm.compute_deterministics(
                 dataset=posterior_for_prediction,
-                var_names=parameters_names,
+                var_names=deterministics_names,
                 progressbar=progressbar,
                 extend_dataset=True,
             )
 
         idata["posterior"] = as_dataset(idata["posterior"]).merge(
-            posterior_for_prediction[parameters_names], compat="override"
+            posterior_for_prediction[deterministics_names], compat="override"
         )
 
         if kind in ("response", "response_conditional", "time_and_cause"):
@@ -500,7 +524,7 @@ class PyMCModel:
             plan for plan in factor_plans if (plan.groups_index == -1).any() or plan.groups_new
         ]
         var_names = parameters_names[:]
-        if kind in ("response", "response_conditional", "time_and_cause"):
+        if kind in ("response", "response_conditional", "time_and_cause", "response_mean"):
             var_names += responses_names
 
         trace = as_dataset(idata["posterior"]).assign(offset_values)
@@ -528,7 +552,9 @@ class PyMCModel:
         )
         if interventions:
             model = pm.do(model, interventions)
-        build_response_prediction_variables(self.spec.response_term, model, self.spec.family, kind)
+        build_response_prediction_variables(
+            self.spec.response_term, model, self.spec.family, kind, self._get_parameter_labels()
+        )
 
         with _suppress_logging(), model:
             predictions = pm.sample_posterior_predictive(
