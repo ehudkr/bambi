@@ -1141,11 +1141,15 @@ class Model:
         predicted values divided by the variance of the predicted values plus the variance
         of the residuals. For details of the Bayesian R² see [1]_.
 
+        The predicted values are the posterior draws of the mean of the response, E[Y]. They are
+        computed with `predict(kind="response_mean")` and added to the `posterior` group of
+        `idata`. For families without a mean, such as the categorical and ordinal families, the
+        parent parameter is used instead.
+
         Parameters
         ----------
         idata : DataTree
-            The `DataTree` instance returned by `.fit()`. It should contain the
-            `posterior_predictive` group, otherwise it will be computed and added to `idata`.
+            The `DataTree` instance returned by `.fit()`.
         summary : bool, optional
             If `True`, it returns a summary of the Bayesian R². Otherwise, it returns the
             posterior samples of the Bayesian R².
@@ -1162,11 +1166,16 @@ class Model:
         .. [1] Gelman et al. *R-squared for Bayesian regression models*.
             The American Statistician. 73(3) (2019). <https://doi.org/10.1080/00031305.2018.1549100>
         """
-        response_name = self.response_term.name
-        pred_mean = self.family.likelihood.parent
+        response_name = self.response_term.label
 
-        if pred_mean not in idata.posterior:
-            self.predict(idata, kind="response_params", inplace=True)
+        if self.has_response_mean():
+            pred_mean = f"{response_name}_mean"
+            if pred_mean not in idata.posterior:
+                self.predict(idata, kind="response_mean", inplace=True)
+        else:
+            pred_mean = self.parameters[self.family.likelihood.parent].label
+            if pred_mean not in idata.posterior:
+                self.predict(idata, kind="response_params", inplace=True)
 
         # We should change this to use bayesian_r2 ensuring we pass the correct scale for each
         # family we could use residual_r2 as a fallback for families we don't have implemented

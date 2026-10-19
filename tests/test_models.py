@@ -2023,6 +2023,47 @@ def test_predict_response_mean_not_available_competing_risks():
     assert not model.has_response_mean()
 
 
+def test_r2_score_uses_response_mean(response_mean_data, mock_pymc_sample):
+    formula = bmb.Formula("y ~ x", "psi ~ x")
+    model = bmb.Model(formula, response_mean_data, family="hurdle_poisson")
+    idata = model.fit(chains=2, draws=20)
+    r2 = model.r2_score(idata, summary=False)
+
+    # Residuals are computed with respect to E[Y], not to the parent parameter 'mu'.
+    y = response_mean_data["y"].to_numpy()
+    y_mean = idata.posterior["y_mean"].stack(sample=("chain", "draw")).to_numpy().T
+    var_y_mean = y_mean.var(axis=1, ddof=1)
+    var_residual = (y - y_mean).var(axis=1, ddof=1)
+    np.testing.assert_allclose(np.sort(r2), np.sort(var_y_mean / (var_y_mean + var_residual)))
+
+
+def test_r2_score_with_alias(response_mean_data, mock_pymc_sample):
+    model = bmb.Model("z ~ x", response_mean_data)
+    model.set_alias({"z": "response"})
+    idata = model.fit(chains=2, draws=20)
+    model.r2_score(idata)
+    np.testing.assert_allclose(idata.posterior["response_mean"], idata.posterior["mu"])
+
+
+def test_r2_score_bernoulli(mock_pymc_sample):
+    # The mean of a binary response is the probability 'p'.
+    data = pd.DataFrame({"x": [0.0, 1.0, 2.0, 3.0], "y": [0, 1, 0, 1]})
+    model = bmb.Model("y ~ x", data, family="bernoulli")
+    idata = model.fit(chains=2, draws=20)
+    model.r2_score(idata)
+    np.testing.assert_allclose(idata.posterior["y_mean"], idata.posterior["p"])
+
+
+def test_r2_score_without_response_mean(response_mean_data, mock_pymc_sample):
+    # Cure families have no finite mean, so the parent parameter is used instead.
+    data = response_mean_data.assign(z=np.exp(response_mean_data["z"]))
+    model = bmb.Model("z ~ x", data, family="cure_weibull")
+    idata = model.fit(chains=2, draws=20)
+    model.r2_score(idata)
+    assert "z_mean" not in idata.posterior
+    assert "mu" in idata.posterior
+
+
 def test_predict_include_group_specific(data_random_n100):
     model = bmb.Model("binary_num ~ 1 + (1|continuous1)", data_random_n100, family="bernoulli")
     model.build()
