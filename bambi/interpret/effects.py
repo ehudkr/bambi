@@ -359,9 +359,9 @@ def _build_predictions(
     conditional : str, list, dict, or None
         Variables to condition on.
     target : str
-        Which quantity to extract. `"mean"` for the posterior of the parent
-        parameter, the response variable name for posterior predictive samples, or a
-        distributional component name.
+        Which quantity to extract. `"mean"` for the posterior of the mean of the response,
+        the response variable name for posterior predictive samples, or a distributional
+        component name.
     transforms : dict or None
         Dictionary of transformations.
     Returns
@@ -446,10 +446,11 @@ def predictions(
     average_by : str, list or None
         Variables to average predictions over.
     target : str
-        Which quantity to extract. `"mean"` (default) for the posterior of the parent
-        parameter (e.g. `"mu"`). Pass the response variable name (e.g. `"mpg"`) for posterior
-        predictive samples. Pass a distributional component name (e.g. `"sigma"`) for the
-        posterior of that component.
+        Which quantity to extract. `"mean"` (default) for the posterior of the mean of the
+        response, E[Y], or of the parent parameter for families without a mean (e.g. `"p"` for
+        the categorical family). Pass the response variable name (e.g. `"mpg"`) for posterior
+        predictive samples. Pass a distributional component name (e.g. `"mu"` or `"sigma"`)
+        for the posterior of that component.
     use_hdi : bool
         Whether to use highest density interval. Default is True.
     prob : float or list[float] or None
@@ -547,10 +548,11 @@ def plot_predictions(
     average_by : str, list[str], or None
         Variables to average predictions over.
     target : str
-        Which quantity to extract. `"mean"` (default) for the posterior of the parent
-        parameter (e.g. `"mu"`). Pass the response variable name (e.g. `"mpg"`) for posterior
-        predictive samples. Pass a distributional component name (e.g. `"sigma"`) for the
-        posterior of that component.
+        Which quantity to extract. `"mean"` (default) for the posterior of the mean of the
+        response, E[Y], or of the parent parameter for families without a mean (e.g. `"p"` for
+        the categorical family). Pass the response variable name (e.g. `"mpg"`) for posterior
+        predictive samples. Pass a distributional component name (e.g. `"mu"` or `"sigma"`)
+        for the posterior of that component.
     use_hdi : bool
         Whether to use highest density interval. Default is True.
     prob : float or list[float] or None
@@ -639,7 +641,9 @@ def comparisons(
     average_by : str, list[str], or None
         Variables to average comparisons over.
     target : str
-        The target parameter to compare. Default is "mean".
+        Which quantity to compare. `"mean"` (default) for the mean of the response, E[Y], or of
+        the parent parameter for families without a mean. Pass the response variable name for
+        posterior predictive samples, or a distributional component name (e.g. `"mu"`).
     comparison : Callable[[DataArray, DataArray], DataArray] or str
         Comparison function or string name. Built-in options: "diff" (difference),
         "ratio" (ratio), "lift" (relative difference). Default is "diff".
@@ -750,10 +754,11 @@ def plot_comparisons(
     average_by : str or list or None
         Variables to average comparisons over.
     target : str
-        Which quantity to extract. `"mean"` (default) for the posterior of the parent
-        parameter (e.g. `"mu"`). Pass the response variable name (e.g. `"mpg"`) for posterior
-        predictive samples. Pass a distributional component name (e.g. `"sigma"`) for the
-        posterior of that component.
+        Which quantity to extract. `"mean"` (default) for the posterior of the mean of the
+        response, E[Y], or of the parent parameter for families without a mean (e.g. `"p"` for
+        the categorical family). Pass the response variable name (e.g. `"mpg"`) for posterior
+        predictive samples. Pass a distributional component name (e.g. `"mu"` or `"sigma"`)
+        for the posterior of that component.
     comparison : Callable[[DataArray, DataArray], DataArray] or str
         Comparison function or string name. Built-in options: "diff" (difference),
         "ratio" (ratio), "lift" (relative difference). Default is "diff".
@@ -860,10 +865,11 @@ def slopes(
         Default is "dydx". Custom functions should accept (derivative, x, y) DataArrays
         and return a DataArray.
     target : str
-        Which quantity to extract. `"mean"` (default) for the posterior of the parent
-        parameter (e.g. `"mu"`). Pass the response variable name (e.g. `"mpg"`) for posterior
-        predictive samples. Pass a distributional component name (e.g. `"sigma"`) for the
-        posterior of that component.
+        Which quantity to extract. `"mean"` (default) for the posterior of the mean of the
+        response, E[Y], or of the parent parameter for families without a mean (e.g. `"p"` for
+        the categorical family). Pass the response variable name (e.g. `"mpg"`) for posterior
+        predictive samples. Pass a distributional component name (e.g. `"mu"` or `"sigma"`)
+        for the posterior of that component.
     use_hdi : bool
         Whether to use highest density interval. Default is True.
     prob : float or list[float] or None
@@ -980,10 +986,11 @@ def plot_slopes(
         "eyex" (percent/percent), "eydx" (percent/unit), "dyex" (unit/percent).
         Default is "dydx".
     target : str
-        Which quantity to extract. `"mean"` (default) for the posterior of the parent
-        parameter (e.g. `"mu"`). Pass the response variable name (e.g. `"mpg"`) for posterior
-        predictive samples. Pass a distributional component name (e.g. `"sigma"`) for the
-        posterior of that component.
+        Which quantity to extract. `"mean"` (default) for the posterior of the mean of the
+        response, E[Y], or of the parent parameter for families without a mean (e.g. `"p"` for
+        the categorical family). Pass the response variable name (e.g. `"mpg"`) for posterior
+        predictive samples. Pass a distributional component name (e.g. `"mu"` or `"sigma"`)
+        for the posterior of that component.
     use_hdi : bool
         Whether to use highest density interval. Default is True.
     prob : float or list[float] or None

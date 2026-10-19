@@ -25,7 +25,7 @@ class TargetInfo(NamedTuple):
     group : str
         `predictions`
     predict_kind : str
-        `response_params` or `response` — passed to model.predict()
+        `response_params`, `response_mean`, or `response` — passed to model.predict()
     """
 
     response_name: str
@@ -97,10 +97,11 @@ def resolve_target(model: Model, target: str) -> TargetInfo:
     model : Model
         The fitted Bambi model.
     target : str
-        Which quantity to extract. `"mean"` for the posterior of the parent
-        parameter (e.g. `"mu"`). Pass the response variable name (e.g. `"mpg"`) for
-        posterior predictive samples. Pass a distributional component name (e.g.
-        `"sigma"`) for the posterior of that component.
+        Which quantity to extract. `"mean"` for the posterior of the mean of the response,
+        E[Y]. For families without a mean, such as the categorical and ordinal families, it's
+        the posterior of the parent parameter (e.g. `"p"`). Pass the response variable name
+        (e.g. `"mpg"`) for posterior predictive samples. Pass a distributional component name
+        (e.g. `"mu"` or `"sigma"`) for the posterior of that component.
 
     Returns
     -------
@@ -109,6 +110,10 @@ def resolve_target(model: Model, target: str) -> TargetInfo:
     """
     response_name = model.response_term.label
     match target:
+        case "mean" if model.has_response_mean():
+            return TargetInfo(
+                response_name, f"{response_name}_mean", "predictions", "response_mean"
+            )
         case "mean":
             return TargetInfo(
                 response_name,

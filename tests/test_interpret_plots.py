@@ -265,6 +265,10 @@ class TestPredictions:
 
         result = predictions(model, idata, conditional="x")
         assert "n" not in result.summary
+        # The mean of the response is the expected number of successes.
+        np.testing.assert_allclose(
+            result.summary["estimate"], 62 * result.draws.predictions["p"].mean(("chain", "draw"))
+        )
 
     @pytest.mark.parametrize("target", ["mean", "mpg"])
     @pytest.mark.parametrize(
@@ -459,6 +463,32 @@ class TestPredictions:
         model, idata = distributional_fixture
         result = plot_predictions(model, idata, "x", target="alpha")
         assert isinstance(result, Figure)
+
+    def test_target_mean_is_response_mean(self, mock_pymc_sample):
+        # For hurdle families, the mean of the response is not the parent parameter.
+        rng = np.random.default_rng(1234)
+        x = rng.uniform(-1, 1, 50)
+        y = np.where(rng.uniform(size=50) < 0.5, rng.poisson(2, size=50) + 1, 0)
+        data = pd.DataFrame({"x": x, "y": y})
+        model = bmb.Model(bmb.Formula("y ~ x", "psi ~ x"), data, family="hurdle_poisson")
+        idata = model.fit(chains=2, draws=20)
+
+        result = predictions(model, idata, conditional={"x": [-0.5, 0.5]})
+        draws = result.draws.predictions
+        mu, psi = draws["mu"], draws["psi"]
+        np.testing.assert_allclose(draws["y_mean"], psi * mu / (1 - np.exp(-mu)))
+        np.testing.assert_allclose(
+            result.summary["estimate"], draws["y_mean"].mean(("chain", "draw"))
+        )
+
+        # The parent parameter is still available by name.
+        result = predictions(model, idata, conditional={"x": [-0.5, 0.5]}, target="mu")
+        np.testing.assert_allclose(
+            result.summary["estimate"], result.draws.predictions["mu"].mean(("chain", "draw"))
+        )
+
+        contrast = comparisons(model, idata, contrast={"x": [-0.5, 0.5]}, conditional=None)
+        assert contrast.summary["estimate"].notna().all()
 
     def test_integer_predictor(self, integer_data_fixture):
         model, idata = integer_data_fixture
