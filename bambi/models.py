@@ -25,7 +25,7 @@ from bambi.families.builtin import (
     OrderedStereotype,
     StoppingRatio,
 )
-from bambi.families.types import DimType
+from bambi.families.types import DimType, ResponseType
 from bambi.formula import Formula, check_ordinal_formula
 from bambi.priors import Prior
 from bambi.scaling import scale_priors
@@ -1107,6 +1107,23 @@ class Model:
             self.build()
         return self.backend.has_response_mean()
 
+    def _warn_response_mean_fallback(self, stacklevel=3):
+        """Warn that the parent parameter is used because the mean of the response is unknown.
+
+        Categorical and ordinal families don't warn: their parent parameter holds the
+        probabilities of the response categories, which are the mean of the response.
+        """
+        if self.family.DATA_TYPE in (ResponseType.CATEGORICAL, ResponseType.ORDINAL):
+            return
+        parent = self.parameters[self.family.likelihood.parent].label
+        warnings.warn(
+            f"The mean of the response is not available for this model ({self.family.name} "
+            f"family), so the parent parameter '{parent}' is used instead. It may not be the "
+            "mean of the response.",
+            UserWarning,
+            stacklevel=stacklevel,
+        )
+
     def compute_log_likelihood(self, idata, data=None, inplace=True, progressbar=False):
         """Compute the model's log-likelihood
 
@@ -1173,6 +1190,7 @@ class Model:
             if pred_mean not in idata.posterior:
                 self.predict(idata, kind="response_mean", inplace=True)
         else:
+            self._warn_response_mean_fallback()
             pred_mean = self.parameters[self.family.likelihood.parent].label
             if pred_mean not in idata.posterior:
                 self.predict(idata, kind="response_params", inplace=True)

@@ -2059,7 +2059,8 @@ def test_r2_score_without_response_mean(response_mean_data, mock_pymc_sample):
     data = response_mean_data.assign(z=np.exp(response_mean_data["z"]))
     model = bmb.Model("z ~ x", data, family="cure_weibull")
     idata = model.fit(chains=2, draws=20)
-    model.r2_score(idata)
+    with pytest.warns(UserWarning, match="parent parameter 'mu' is used instead"):
+        model.r2_score(idata)
     assert "z_mean" not in idata.posterior
     assert "mu" in idata.posterior
 

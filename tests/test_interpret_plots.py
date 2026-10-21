@@ -1,3 +1,5 @@
+import warnings
+
 import matplotlib
 import numpy as np
 import pandas as pd
@@ -489,6 +491,23 @@ class TestPredictions:
 
         contrast = comparisons(model, idata, contrast={"x": [-0.5, 0.5]}, conditional=None)
         assert contrast.summary["estimate"].notna().all()
+
+    def test_target_mean_fallback_warns(self, mock_pymc_sample):
+        # The mean of a constrained response is unknown, so the parent parameter is used.
+        rng = np.random.default_rng(1234)
+        data = pd.DataFrame({"x": rng.normal(size=50), "y": rng.normal(size=50).clip(-4, 4)})
+        model = bmb.Model("constrained(y, lb=-5) ~ x", data)
+        idata = model.fit(chains=2, draws=20)
+        with pytest.warns(UserWarning, match="parent parameter 'mu' is used instead"):
+            result = predictions(model, idata, conditional="x")
+        assert "mu" in result.draws.predictions
+
+    def test_target_mean_categorical_does_not_warn(self, food_choice):
+        # Category probabilities are the mean of a categorical response, so nothing is lost.
+        model, idata = food_choice
+        with warnings.catch_warnings():
+            warnings.filterwarnings("error", message=".*parent parameter.*")
+            predictions(model, idata, conditional="length")
 
     def test_integer_predictor(self, integer_data_fixture):
         model, idata = integer_data_fixture

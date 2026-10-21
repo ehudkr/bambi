@@ -115,6 +115,8 @@ def resolve_target(model: Model, target: str) -> TargetInfo:
                 response_name, f"{response_name}_mean", "predictions", "response_mean"
             )
         case "mean":
+            # pylint: disable-next=protected-access
+            model._warn_response_mean_fallback(stacklevel=4)
             return TargetInfo(
                 response_name,
                 model.parameters[model.family.likelihood.parent].label,
